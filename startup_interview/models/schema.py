@@ -25,64 +25,74 @@ class Intent(str, Enum):
     UNKNOWN = "unknown"
 
 
-class Founder(BaseModel):
-    name: Optional[str] = None
-    role: Optional[str] = None
-    background: Optional[str] = None
-
-
 class StartupProfile(BaseModel):
+    # 1. Startup Overview
     company_name: Optional[str] = None
-    industry: Optional[str] = None
-    founded_year: Optional[int] = None
+    startup_idea: Optional[str] = None
+    inspiration: Optional[str] = None
 
-    founders: list[Founder] = Field(default_factory=list)
-
-    stage: Optional[str] = None
-
-    target_customers: Optional[str] = None
+    # 2. Problem Discovery
     problem_statement: Optional[str] = None
+    problem_sufferers: Optional[str] = None
+    problem_frequency: Optional[str] = None
+    unsolved_consequences: Optional[str] = None
+
+    # 3. Customer Understanding
+    ideal_customer: Optional[str] = None
+    current_solutions: Optional[str] = None
+    solutions_inadequate: Optional[str] = None
+
+    # 4. Solution Design
     solution: Optional[str] = None
+    how_it_solves: Optional[str] = None
+    why_choose_it: Optional[str] = None
 
-    users: Optional[int] = None
-    paying_customers: Optional[int] = None
-    mrr: Optional[float] = None
+    # 5. Founder Fit
+    founder_fit: Optional[str] = None
+    industry_experience: Optional[str] = None
+    founder_skills: Optional[str] = None
 
-    competitors: list[str] = Field(default_factory=list)
+    # 6. Competition
+    competitors: Optional[str] = None
+    alternatives: Optional[str] = None
+    why_switch: Optional[str] = None
 
-    funding_raised: Optional[float] = None
+    # 7. Business Model
+    monetization: Optional[str] = None
+    paying_customers: Optional[str] = None
+    why_pay: Optional[str] = None
 
-    @field_validator("mrr", "funding_raised")
-    @classmethod
-    def non_negative_money(cls, v):
-        if v is not None and v < 0:
-            raise ValueError("monetary values cannot be negative")
-        return v
-
-    @field_validator("users", "paying_customers", "founded_year")
-    @classmethod
-    def non_negative_int(cls, v):
-        if v is not None and v < 0:
-            raise ValueError("value cannot be negative")
-        return v
+    # 8. Execution Plan
+    first_version: Optional[str] = None
+    required_resources: Optional[str] = None
+    biggest_risk: Optional[str] = None
 
 
-# Fields the LLM is allowed to populate via extraction, in the exact
-# shape it must return them (flat, scalar-first). Lists are merged by
-# the backend, never overwritten blindly, so extraction returns them
-# as "additions" rather than replacements.
+# Fields the LLM is allowed to populate via extraction
 EXTRACTABLE_FIELDS = [
     "company_name",
-    "industry",
-    "founded_year",
-    "stage",
-    "target_customers",
+    "startup_idea",
+    "inspiration",
     "problem_statement",
+    "problem_sufferers",
+    "problem_frequency",
+    "unsolved_consequences",
+    "ideal_customer",
+    "current_solutions",
+    "solutions_inadequate",
     "solution",
-    "users",
+    "how_it_solves",
+    "why_choose_it",
+    "founder_fit",
+    "industry_experience",
+    "founder_skills",
+    "competitors",
+    "alternatives",
+    "why_switch",
+    "monetization",
     "paying_customers",
-    "mrr",
-    "funding_raised",
-    "competitors",   # list[str] addition
-    "founders",      # list[Founder-like dict] addition
+    "why_pay",
+    "first_version",
+    "required_resources",
+    "biggest_risk",
 ]

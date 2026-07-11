@@ -65,13 +65,7 @@ def node_validation(state: InterviewState) -> dict:
     # Merge into the canonical profile
     data = startup.model_dump()
     for field, value in extracted.items():
-        if field == "competitors":
-            existing = set(data.get("competitors") or [])
-            data["competitors"] = list(existing.union(value))
-        elif field == "founders":
-            data["founders"] = (data.get("founders") or []) + value
-        else:
-            data[field] = value
+        data[field] = value
 
     updated_startup = StartupProfile(**data)
     skipped = state.get("skipped_fields", [])

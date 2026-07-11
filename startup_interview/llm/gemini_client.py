@@ -167,14 +167,11 @@ Allowed output fields (omit any field not mentioned in the message):
 
 Rules:
 - Only include a field if the user's message actually states it.
-- "competitors" must be a list of company/product name strings.
-- "founders" must be a list of objects like {{"name": ..., "role": ..., "background": ...}}.
-- "mrr" and "funding_raised" are numbers in USD (convert "$8k" -> 8000).
-- "founded_year" is a 4-digit year.
+- Every field is extracted as a string representing the user's response.
 - Never invent values. Never include null/empty fields.
 
 Respond ONLY as JSON, e.g.:
-{{"paying_customers": 15, "founded_year": 2024}}
+{{"company_name": "Acme Corp", "startup_idea": "SaaS for cats"}}
 """
 
 
