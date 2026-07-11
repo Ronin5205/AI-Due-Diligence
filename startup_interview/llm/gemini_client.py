@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 
 from google import genai
@@ -29,37 +30,71 @@ from models.schema import EXTRACTABLE_FIELDS, Intent
 
 _MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 _client = None
+_warned_missing_key = False
 
 
 def _get_client():
-    global _client
+    global _client, _warned_missing_key
     if _client is not None:
         return _client
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. Export it or put it in a .env file."
-        )
+        if not _warned_missing_key:
+            print(
+                "[gemini_client] WARNING: GEMINI_API_KEY is not set. "
+                "All LLM calls will fail and the interview will fall back "
+                "to static defaults (repeated fallback questions, intent "
+                "always 'unknown'). Set it in your shell or in a .env file.",
+                file=sys.stderr,
+            )
+            _warned_missing_key = True
+        raise RuntimeError("GEMINI_API_KEY is not set.")
     _client = genai.Client(api_key=api_key)
     return _client
 
 
+def _call_gemini_json(prompt: str, system_instruction: str, max_output_tokens: int):
+    client = _get_client()
+    return client.models.generate_content(
+        model=_MODEL_NAME,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=max_output_tokens,
+        ),
+    )
+
+
 def _safe_json_call(prompt: str, system_instruction: str) -> dict[str, Any]:
-    """Call Gemini in JSON mode and defensively parse the result."""
+    """Call Gemini in JSON mode and defensively parse the result.
+
+    Explicitly sets max_output_tokens (some SDK/model defaults are low
+    enough to truncate mid-object for JSON-mode responses) and retries
+    once with more room + a stricter instruction if parsing still fails.
+    """
+    text = ""
     try:
-        client = _get_client()
-        response = client.models.generate_content(
-            model=_MODEL_NAME,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                temperature=0.1,
-            ),
-        )
+        response = _call_gemini_json(prompt, system_instruction, max_output_tokens=512)
         text = (response.text or "").strip()
         return json.loads(text)
-    except (json.JSONDecodeError, ValueError, Exception):
+    except json.JSONDecodeError as e:
+        print(
+            f"[gemini_client] WARNING: JSON response looked truncated/malformed "
+            f"({e}). Raw text: {text!r}. Retrying with more tokens...",
+            file=sys.stderr,
+        )
+        try:
+            retry_prompt = prompt + "\n\nReturn ONLY compact, complete, valid JSON. Do not truncate it."
+            response = _call_gemini_json(retry_prompt, system_instruction, max_output_tokens=1024)
+            text = (response.text or "").strip()
+            return json.loads(text)
+        except Exception as e2:
+            print(f"[gemini_client] WARNING: retry also failed: {type(e2).__name__}: {e2}. Raw text: {text!r}", file=sys.stderr)
+            return {}
+    except Exception as e:
+        print(f"[gemini_client] WARNING: Gemini call failed: {type(e).__name__}: {e}", file=sys.stderr)
         return {}
 
 
@@ -75,7 +110,8 @@ def _safe_text_call(prompt: str, system_instruction: str) -> str:
             ),
         )
         return (response.text or "").strip()
-    except Exception:
+    except Exception as e:
+        print(f"[gemini_client] WARNING: Gemini call failed: {type(e).__name__}: {e}", file=sys.stderr)
         return ""
 
 

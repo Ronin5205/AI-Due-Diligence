@@ -1,3 +1,5 @@
 startup_interview/.env
 startup_interview/graph/__pycache__/
+startup_interview/llm/__pycache__/
+startup_interview/models/__pycache__/
 startup_interview/sessions/

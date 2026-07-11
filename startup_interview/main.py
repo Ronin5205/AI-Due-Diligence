@@ -16,6 +16,9 @@ from __future__ import annotations
 import sys
 import uuid
 
+from dotenv import load_dotenv
+load_dotenv()  # reads .env in the current directory into os.environ
+
 from graph.builder import build_graph
 from graph.persistence import save_session, load_session
 from graph import question_bank as qb
