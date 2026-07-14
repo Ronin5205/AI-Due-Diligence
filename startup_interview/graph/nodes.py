@@ -1,7 +1,7 @@
 """
 Node functions. Each node takes InterviewState and returns a partial
 state update (LangGraph merges these). Nodes call into llm.gemini_client
-ONLY for the four narrow jobs described in the spec — routing, ordering,
+ONLY for the narrow jobs described in the spec — routing, ordering,
 validation, and completion logic all live here in plain Python.
 """
 from __future__ import annotations
@@ -31,12 +31,13 @@ def node_intent_classification(state: InterviewState) -> dict:
 def node_information_extraction(state: InterviewState) -> dict:
     intent = state["intent"]
     if intent not in (Intent.ANSWER.value, Intent.PARTIAL_ANSWER.value):
-        # Nothing to extract for greeting/off_topic/clarification/refusal/end
         return {"last_extraction": {}}
 
     extracted = llm.extract_information(
         user_message=state["last_user_message"],
         current_field=state.get("current_field") or "",
+        target_fields=state.get("beat_fields") or [],
+        profile_context=state["startup"].model_dump(exclude_none=True),
     )
     return {"last_extraction": extracted}
 
@@ -47,27 +48,44 @@ def node_information_extraction(state: InterviewState) -> dict:
 def node_validation(state: InterviewState) -> dict:
     extracted = state.get("last_extraction") or {}
     startup = state["startup"]
+    user_message = state.get("last_user_message", "")
+    intent = state.get("intent", "")
+
+    should_extract_seeds = (
+        user_message.strip()
+        and intent in (Intent.ANSWER.value, Intent.PARTIAL_ANSWER.value)
+    )
 
     if not extracted:
-        return {"validation_errors": [], "contradictions": state.get("contradictions", [])}
+        update: dict = {"validation_errors": [], "contradictions": state.get("contradictions", [])}
+        if should_extract_seeds:
+            profile_context = startup.model_dump(exclude_none=True)
+            entities = llm.extract_search_entities(user_message, profile_context)
+            merged_seeds = validators.merge_search_seeds(startup.search_seeds, entities)
+            if merged_seeds != startup.search_seeds:
+                startup = startup.model_copy(update={"search_seeds": merged_seeds})
+                skipped = state.get("skipped_fields", [])
+                update["startup"] = startup
+                update["missing_fields"] = validators.compute_missing_fields(startup, skipped)
+        return update
 
     errors = validators.validate_extracted_values(extracted)
-    new_contradictions = validators.detect_contradictions(startup, extracted)
+    merged_data, new_contradictions = validators.merge_extracted_fields(startup, extracted)
 
     if errors:
-        # Reject the whole extraction batch on validation failure; do not
-        # mutate the profile with bad data.
         return {
             "validation_errors": errors,
             "contradictions": state.get("contradictions", []) + new_contradictions,
         }
 
-    # Merge into the canonical profile
-    data = startup.model_dump()
-    for field, value in extracted.items():
-        data[field] = value
+    updated_startup = StartupProfile(**merged_data)
 
-    updated_startup = StartupProfile(**data)
+    if should_extract_seeds:
+        profile_context = updated_startup.model_dump(exclude_none=True)
+        entities = llm.extract_search_entities(user_message, profile_context)
+        merged_seeds = validators.merge_search_seeds(updated_startup.search_seeds, entities)
+        updated_startup = updated_startup.model_copy(update={"search_seeds": merged_seeds})
+
     skipped = state.get("skipped_fields", [])
     missing = validators.compute_missing_fields(updated_startup, skipped)
 
@@ -84,8 +102,8 @@ def node_validation(state: InterviewState) -> dict:
 # --------------------------------------------------------------------
 def node_off_topic_handler(state: InterviewState) -> dict:
     streak = state.get("off_topic_streak", 0) + 1
-    question = state.get("current_question") or "Could you answer the current question?"
-    response = f"Let's stay focused on the startup assessment.\n\n{question}"
+    question = state.get("current_question") or "What were you saying about your project?"
+    response = f"Back to your project — {question}"
     return {"response_to_user": response, "off_topic_streak": streak}
 
 
@@ -98,51 +116,86 @@ def node_clarification_handler(state: InterviewState) -> dict:
 
 
 def node_refusal_handler(state: InterviewState) -> dict:
-    field = state.get("current_field")
+    beat = state.get("current_beat")
+    beats_asked = list(state.get("beats_asked", []))
+    if beat and beat not in beats_asked:
+        beats_asked.append(beat)
     skipped = state.get("skipped_fields", [])
-    if field and field not in skipped:
-        skipped = skipped + [field]
+    if state.get("current_field") and state["current_field"] not in skipped:
+        skipped = skipped + [state["current_field"]]
     missing = validators.compute_missing_fields(state["startup"], skipped)
-    return {"skipped_fields": skipped, "missing_fields": missing}
+    return {"beats_asked": beats_asked, "skipped_fields": skipped, "missing_fields": missing}
 
 
 def node_greeting_handler(state: InterviewState) -> dict:
     question = state.get("current_question") or ""
-    response = f"Hi! I'm here to walk through a quick due-diligence interview about your startup.\n\n{question}"
+    response = f"Hi — {question}" if question else "Hi — tell me about your startup."
     return {"response_to_user": response}
 
 
 # --------------------------------------------------------------------
-# Node 5: Question Selector (pure rule engine, no LLM)
+# Node 5: Question Selector (gap-driven priority, no LLM routing)
 # --------------------------------------------------------------------
 def node_question_selector(state: InterviewState) -> dict:
+    beats_asked = list(state.get("beats_asked", []))
+    current_beat = state.get("current_beat")
+    if current_beat and current_beat not in beats_asked and state.get("last_user_message"):
+        beats_asked.append(current_beat)
+
     missing = state.get("missing_fields", [])
-    next_field = qb.find_next_missing_field(missing)
-    return {"current_field": next_field}
+    profile = state["startup"]
+    seeds = profile.search_seeds
+    questions_asked = state.get("questions_asked", 0)
+
+    next_beat, hook, beat_fields = qb.find_next_beat(
+        beats_asked, questions_asked, missing, profile, seeds
+    )
+    primary_field = beat_fields[0] if beat_fields else None
+    return {
+        "beats_asked": beats_asked,
+        "current_beat": next_beat,
+        "current_field": primary_field,
+        "beat_fields": beat_fields,
+        "search_gap_context": hook,
+    }
 
 
 # --------------------------------------------------------------------
 # Node 6: Question Generator (LLM phrasing only)
 # --------------------------------------------------------------------
 def node_question_generator(state: InterviewState) -> dict:
-    field = state.get("current_field")
-    if field is None:
+    beat_id = state.get("current_beat")
+    if beat_id is None:
         return {"current_question": ""}
 
-    description = qb.FIELD_DESCRIPTIONS.get(field, "")
-    context = state["startup"].model_dump(exclude_none=True)
-    question = llm.generate_question(field, description, context)
-    if not question:
-        question = qb.FALLBACK_QUESTIONS.get(field, f"Can you tell me about {field}?")
+    beat = qb.get_beat(beat_id)
+    if not beat:
+        return {"current_question": ""}
 
-    return {"current_question": question, "response_to_user": question}
+    field = state.get("current_field") or beat["fields"][0]
+    fallback = beat.get("fallback") or qb.FALLBACK_QUESTIONS.get(field, "")
+
+    # Pre-written fallbacks — direct, plain English, no LLM reaction fluff
+    question = fallback or f"What can you tell me about {field}?"
+
+    return {
+        "current_question": question,
+        "response_to_user": question,
+        "questions_asked": state.get("questions_asked", 0) + 1,
+    }
 
 
 # --------------------------------------------------------------------
-# Node 7: Completion Checker
+# Node 7: Completion Checker (tiered readiness)
 # --------------------------------------------------------------------
 def node_completion_checker(state: InterviewState) -> dict:
-    completed = len(state.get("missing_fields", [])) == 0
+    skipped = state.get("skipped_fields", [])
+    completed = validators.is_interview_complete(
+        state["startup"],
+        skipped,
+        state.get("questions_asked", 0),
+        state.get("beats_asked", []),
+    )
     return {"completed": completed}
 
 
@@ -151,12 +204,28 @@ def node_completion_checker(state: InterviewState) -> dict:
 # --------------------------------------------------------------------
 def node_verification_summary(state: InterviewState) -> dict:
     profile_json = state["startup"].model_dump(exclude_none=True)
-    summary = llm.generate_summary(profile_json)
+    missing = state.get("missing_fields", [])
+    readiness = validators.format_readiness_report(
+        state["startup"], missing,
+        questions_asked=state.get("questions_asked", 0),
+        beats_asked=state.get("beats_asked", []),
+    )
+    summary = llm.generate_summary(profile_json, readiness)
     if not summary:
-        lines = [f"{k}: {v}" for k, v in profile_json.items()]
-        summary = "Please verify the information collected:\n\n" + "\n".join(lines) + "\n\nIs anything incorrect?"
+        company = state["startup"].company_name or "your startup"
+        idea = state["startup"].startup_idea or ""
+        problem = state["startup"].core_problem or ""
+        summary = (
+            f"Here's what I heard about {company}:\n\n"
+            f"{idea}\n\n"
+            f"You're going after: {problem}\n\n"
+            "Did I capture your story right — anything you'd change or add?"
+        )
     return {"response_to_user": summary}
 
 
 def node_end_interview(state: InterviewState) -> dict:
-    return {"response_to_user": "Ending the interview here. Thanks for your time!", "completed": True}
+    return {
+        "response_to_user": "Great pitch — thanks for sharing. Best of luck building!",
+        "completed": True,
+    }

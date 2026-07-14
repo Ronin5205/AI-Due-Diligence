@@ -22,7 +22,12 @@ class InterviewState(TypedDict, total=False):
 
     # Flow control (backend-owned, LLM never sets these)
     current_field: Optional[str]
+    current_beat: Optional[str]
+    beat_fields: list[str]
     current_question: str
+    search_gap_context: str
+    questions_asked: int
+    beats_asked: list[str]
     intent: str
     missing_fields: list[str]
     contradictions: list[str]
@@ -45,7 +50,12 @@ def new_state(session_id: str) -> InterviewState:
         last_user_message="",
         conversation_history=[],
         current_field=None,
+        current_beat=None,
+        beat_fields=[],
         current_question="",
+        search_gap_context="",
+        questions_asked=0,
+        beats_asked=[],
         intent="",
         missing_fields=[],
         contradictions=[],

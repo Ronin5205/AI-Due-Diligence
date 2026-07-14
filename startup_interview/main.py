@@ -1,37 +1,67 @@
 """
-CLI driver for the Startup Due Diligence Interviewer.
+CLI driver for the Startup Pitch Interviewer.
 
 Usage:
-    export GEMINI_API_KEY=your_key_here
-    python main.py [session_id]
+    export GEMINI_API_KEY=your_key_here   # or set in repo-root .env
+    py main.py [session_id]
 
 Each user turn invokes the compiled LangGraph exactly once. The graph
 returns a partial state update; we merge it, persist it, and print
-`response_to_user`. All flow decisions (what question comes next,
-whether the interview is complete, whether to redirect off-topic
-messages) are made by graph.builder / graph.nodes — never by the LLM.
+`response_to_user`. The founder experiences a pitch conversation; the
+backend still collects structured research data behind the scenes.
 """
 from __future__ import annotations
 
 import sys
-import uuid
 
-from dotenv import load_dotenv
-load_dotenv()  # reads .env in the current directory into os.environ
+sys.dont_write_bytecode = True
+
+import json
+import uuid
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    print(
+        "Missing dependencies.\n\n"
+        "From the repo root, install them with:\n"
+        "  py -m pip install -r requirements.txt\n\n"
+        "Then run the CLI with:\n"
+        "  py main.py\n\n"
+        "On Windows, plain `python` may point at MSYS Python without these packages.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
 
 from graph.builder import build_graph
 from graph.persistence import save_session, load_session
 from graph import question_bank as qb
+from graph import validators
 from graph.nodes import node_question_generator
 
 
 def bootstrap_state(session_id: str):
     state = load_session(session_id)
     if not state.get("current_question"):
-        # First-ever turn: seed the first question directly (no user
-        # message to classify yet).
-        state["missing_fields"] = qb.REQUIRED_FIELDS.copy()
-        state["current_field"] = qb.find_next_missing_field(state["missing_fields"])
+        startup = state["startup"]
+        state["missing_fields"] = validators.compute_missing_fields(
+            startup, state.get("skipped_fields", [])
+        )
+        beat_id, hook, beat_fields = qb.find_next_beat(
+            state.get("beats_asked", []),
+            state.get("questions_asked", 0),
+            state["missing_fields"],
+            startup,
+            startup.search_seeds,
+        )
+        state["current_beat"] = beat_id
+        state["current_field"] = beat_fields[0] if beat_fields else None
+        state["beat_fields"] = beat_fields
+        state["search_gap_context"] = hook
         update = node_question_generator(state)
         state.update(update)
     return state
@@ -75,8 +105,28 @@ def main():
         if state.get("completed"):
             break
 
-    print("Interview complete. Final profile:")
-    print(state["startup"].model_dump_json(indent=2))
+    startup = state["startup"]
+    missing = state.get("missing_fields", [])
+
+    print("Interview complete.\n")
+    print("=" * 60)
+    print("FINAL PROFILE")
+    print("=" * 60)
+    print(startup.model_dump_json(indent=2, exclude={"search_seeds"}))
+
+    print("\n" + "=" * 60)
+    print("SEARCH SEEDS (for research engine handoff)")
+    print("=" * 60)
+    print(json.dumps(startup.search_seeds.model_dump(), indent=2))
+
+    print("\n" + "=" * 60)
+    print("READINESS REPORT")
+    print("=" * 60)
+    print(validators.format_readiness_report(
+        startup, missing,
+        questions_asked=state.get("questions_asked", 0),
+        beats_asked=state.get("beats_asked", []),
+    ))
 
 
 if __name__ == "__main__":
