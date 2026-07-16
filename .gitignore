@@ -4,3 +4,4 @@ __pycache__/
 *$py.class
 startup_interview/sessions/
 startup_analyzer/reports/
+node_modules/
