@@ -3,3 +3,4 @@ __pycache__/
 *.py[cod]
 *$py.class
 startup_interview/sessions/
+startup_analyzer/reports/

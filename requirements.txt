@@ -1,4 +1,14 @@
-python-dotenv>=1.0.0
-pydantic>=2.0.0
-langgraph>=0.2.0
-google-genai>=1.0.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+langgraph>=0.2.0
+google-genai>=1.0.0
+httpx>=0.27.0
+psycopg[binary]>=3.1.0
+pytrends>=4.9.0
+
+# Analyzer Information APIs:
+# HackerNews = https://hn.algolia.com/api/v1/
+# Github = https://api.github.com
+# PyTrends = https://pypi.org/project/pytrends/
+# reddit = https://oauth.reddit.com/search
+# Product_Hunt = https://api.producthunt.com/v2/api/graphql
